@@ -1,0 +1,147 @@
+pipeline {
+    agent any
+    tools {
+        jdk 'jdk17'
+        nodejs 'node23'
+    }
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        DOCKER_IMAGE = 'suneel717/sumato:latest'  // Changed Docker image to 'sumato'
+        EKS_CLUSTER_NAME = 'ram-eks'
+        AWS_REGION = 'us-east-2'
+    }
+    stages {
+        stage("clean workspace") {
+            steps {
+                cleanWs()
+            }
+        }
+        stage("Git Checkout") {
+            steps {
+                git 'https://github.com/Suneel-717/DevOps-Project-Zomato-Kastro.git'
+            }
+        }
+        stage("Sonarqube Analysis") {
+            steps {
+                withSonarQubeEnv('sonar-server') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=sumato \
+                    -Dsonar.projectKey=sumato '''
+                }
+            }
+        }
+        stage("Code Quality Gate") {
+            steps {
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token'
+                }
+            }
+        }
+        stage("Install NPM Dependencies") {
+            steps {
+                sh "npm install"
+            }
+        }
+        stage('OWASP FS SCAN') {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit -n', odcInstallation: 'DP-Check'
+            }
+        }
+        stage("Trivy File Scan") {
+            steps {
+                sh "trivy fs . > trivy.txt"
+            }
+        }
+        stage("Build Docker Image") {
+            steps {
+                sh "docker build -t sumato ."
+            }
+        }
+        stage("Tag & Push to DockerHub") {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker') {
+                        sh "docker tag sumato suneel717/sumato:latest"
+                        sh "docker push suneel717/sumato:latest"
+                    }
+                }
+            }
+        }
+        stage('Docker Scout Image') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                        sh 'docker-scout quickview suneel717/sumato:latest'
+                        sh 'docker-scout cves suneel717/sumato:latest'
+                        sh 'docker-scout recommendations suneel717/sumato:latest'
+                    }
+                }
+            }
+        }
+        stage("Deploy to Container") {
+            steps {
+                script {
+                    // Check if container already exists with name 'sumato'
+                    def containerExists = sh(script: "docker ps -a --filter 'name=sumato' --quiet", returnStdout: true).trim()
+
+                    if (containerExists) {
+                        // Stop the existing container named 'sumato'
+                        sh "docker stop sumato"
+                        // Remove the existing container named 'sumato'
+                        sh "docker rm sumato"
+                    }
+
+                    // Run the new container with the name 'sumato'
+                    sh 'docker run -d --name suneel -p 3001:3000 suneel717/sumato:latest'
+                }
+            }
+        }
+        stage('Deploy to EKS Cluster') {
+            steps {
+                script {
+                    sh '''
+                    echo "Verifying AWS credentials..."
+                    aws sts get-caller-identity
+
+                    echo "Configuring kubectl for EKS cluster..."
+                    aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
+
+                    echo "Verifying kubeconfig..."
+                    kubectl config view
+
+                    echo "Deploying application to EKS..."
+                    kubectl apply -f deployment.yml
+                    kubectl apply -f service.yml
+
+                    echo "Verifying deployment..."
+                    kubectl get pods
+                    kubectl get svc
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        always {
+            emailext attachLog: true,
+                subject: "'${currentBuild.result}'",
+                body: """
+                    <html>
+                    <body>
+                        <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
+                            <p style="color: white; font-weight: bold;">Project: ${env.JOB_NAME}</p>
+                        </div>
+                        <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
+                            <p style="color: white; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
+                        </div>
+                        <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
+                            <p style="color: white; font-weight: bold;">URL: ${env.BUILD_URL}</p>
+                        </div>
+                    </body>
+                    </html>
+                """,
+                to: 'thimmampallisunil@gmail.com',
+                mimeType: 'text/html',
+                attachmentsPattern: 'trivy.txt'
+        }
+    }
+}

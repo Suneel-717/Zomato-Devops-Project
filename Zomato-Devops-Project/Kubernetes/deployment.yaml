@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sumato  # Updated from 'zomato' to 'sumato'
+  labels:
+    app: sumato  # Updated from 'zomato' to 'sumato'
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sumato  # Updated from 'zomato' to 'sumato'
+  template:
+    metadata:
+      labels:
+        app: sumato  # Updated from 'zomato' to 'sumato'
+    spec:
+      containers:
+      - name: sumato  # Updated from 'zomato' to 'sumato'
+        image: suneel717/sumato:latest  # Updated from 'suneel717/zomato:latest' to 'suneel717/sumato:latest'
+        ports:
+        - containerPort: 3000
